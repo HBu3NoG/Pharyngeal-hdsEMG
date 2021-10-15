@@ -13,10 +13,18 @@ def mats2dict(dir = './data/raw'):
 
     subject = {}    # Initialize an empty dictionary.
     for filename in mat_files:  # Iterate across matlab files from our data/raw directory
+        # Extract experiment information from filename.
+        a,b,c = (filename.find(word) for word in ['S','E','.mat'])
+        sub_id, expt_id = int(filename[a+1:b]), filename[b+1:c] 
+
+        # Initialize a subject if it does not yet exist. (Still need to add an else case, but it's not a problem yet.)
+        if not sub_id in subject.keys():
+            subject[sub_id] = {}
+
+        # Assign recording data to the dictionary structure. Stored as a numpy array because it is handled better.
         directory = 'data/raw/'
         recording = sio.loadmat(directory+filename)['newdata']
-        id = int(filename[1])   # Get subject ID from filename (could be better, but it works) 
-        subject[id] = np.array(recording) # Assign subject id to its recording numpy array with shape (Channels, Time)
+        subject[sub_id]['Recording'] = np.array(recording)
 
     return subject
 
