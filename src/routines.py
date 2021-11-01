@@ -6,73 +6,50 @@ import scipy.io as sio
 from scipy import signal
 import os
 
-# Get matlab files from the folder storing all raw data.
-def mats2dict(dir = './data/raw'):
+# Get matlab files from the folder storing all raw data and import them as dictionaries.
+def mats2dict(dir = './data/raw/', sub_load = [7], fVerbose = True):
     files = os.listdir(dir)   # List all files in the raw data dump.
     mat_files = [file for file in files if file[-4:] == '.mat'] # Get all files with the extension .mat
 
-    subject = {}    # Initialize an empty dictionary.
+    subjects = {}    # Initialize an empty dictionary.
     for filename in mat_files:  # Iterate across matlab files from our data/raw directory
         # Extract experiment information from filename.
         a,b,c = (filename.find(word) for word in ['S','E','.mat'])
         sub_id, expt_id = int(filename[a+1:b]), filename[b+1:c] 
+        if sub_id not in sub_load:
+            continue
+        else:
+            print(sub_id)
 
-        # Initialize a subject if it does not yet exist. (Still need to add an else case, but it's not a problem yet.)
-        if not sub_id in subject.keys():
-            subject[sub_id] = {}
+            # Initialize a subject if it does not yet exist. (Still need to add an else case, but it's not a problem yet.)
+            if not sub_id in subjects.keys():
+                subjects[sub_id] = {}
 
-        # Assign recording data to the dictionary structure. Stored as a numpy array because it is handled better.
-        directory = 'data/raw/'
-        recording = sio.loadmat(directory+filename)['newdata']
-        subject[sub_id]['Recording'] = np.array(recording)
+            # Add experiment information to the subject dictionary.
+            subjects[sub_id]['Information'] = expt_id
 
-    return subject
+            # Assign recording data to the dictionary structure. Stored as a numpy array because it is handled better.
+            mat_file = sio.loadmat(dir+filename)
+            variable_name = list(mat_file.keys())[-1]           # Some recordings have different variable names, but typically our data of interest is the last one.
+            recording = mat_file[variable_name]
+            subjects[sub_id]['Recording'] = np.array(recording)
+            
+            # For now we will assume they are all 2000. BUt some are 4000.
+            subjects[sub_id]['Sampling Frequency'] = 2000
 
-
-class Subject:
-    # Initialize a subject class with 2 files: Raw recording from TMSi (.mat), 
-    #   time stamps that dictate the swallow period (.csv). 
-    def __init__(self,filename_Swallow,filename_TimeStamps,labels=[],fs=2000):
-        #### Import EMG rest data.
-        # Load .mat file
-        file = scipy.io.loadmat(filename_Swallow)
-        # Assign TMSi noise recording to variable "NoiseData"
-        self.data = file['newdata'][:,:-150]            #Added [:,:-150] to get rid of the short at the end of the recording         
-
-        #### Segment Swallows from EMG data
-        # Load .csv file into a df
-        df = pd.read_csv(filename_TimeStamps)
-        # Import timestamp vector where row 1: start of swallow, row 2 end of swallow.
-        timestamps = np.array([float(x[2:4])*60+float(x[5:]) for x in df['Time']])
-        # Clean up timestamps by removing index x_n when x_n-x_(n-1)<500ms.
-        timestamps_wrong = np.where((timestamps[1:]-timestamps[:timestamps.shape[0]-1])<0.5)[0]+1
-        timestamps = np.delete(timestamps,timestamps_wrong)
-        # Create sample indeces for easy access in the dataset
-        swallowIDx = [np.arange(x[0]*fs,x[1]*fs,dtype=int) for x in timestamps.reshape(-1,2)]
-        # Every subject has swallows and labels for future classification
-        self.swallows = [self.data[:,IDx] for IDx in swallowIDx]
-        self.labels = labels
-
-# Function to plot TMSi data. Data should be a (Ch,Samples) matrix.
-## 
-def PlotTMSi(axs, Data, fs=2000, vline = []):
-    N,M = Data.shape
-    Time = np.arange(M)/fs
-
-    # Normalize for plotting. 
-    Max,Min = np.max(Data,axis=1),np.min(Data,axis=1)
-    Data = (Data-Min.reshape(N,1))/(Max-Min).reshape(N,1)
-
-    # Plotting.
-    axs.plot(Time,Data.T+np.arange(N))
-    axs.set_ylabel('Channels')
-    axs.set_yticks(np.arange(N/4+1)*4)
-    axs.set_xlabel('Time (sec)')
-
-    # Sections. 
-    if vline:
-        for xc in vline:
-            axs.axvline(x=xc, linestyle='--',color='r')
+            # Add subject's clicker information to the subject dictionary. In samples.
+            clicker_time = pd.read_csv(dir+filename[:-4]+'_events.csv')['Seconds']
+            subjects[sub_id]['Timestamps'] = np.array(clicker_time)
+        
+    # Print information about the subject structure.
+    if fVerbose:
+        print('Subjects imported: ', *subjects.keys())
+        print('Subject information: ', *subjects[next(iter(subjects))].keys(), sep='\t')
+        
+    if len(subjects.keys()) == 1:
+        return subjects[next(iter(subjects))]
+    else:
+        return subjects
 
 # Options:  btype{‘lowpass’, ‘highpass’, ‘bandpass’, ‘bandstop’}
 #           fc (Cutoff frequency), N (filter order), fs (sampling frequency)
@@ -139,7 +116,7 @@ def Covariance(Signals,Type='MLE',Robust=[]):  # Robust = [T:Period, Z_outlier:N
             z_dist = (Distance-np.mean(Distance))/np.std(Distance)
             #if i == 1: plt.plot(z_dist)
             # Find outliers
-            Index = np.where(np.abs(z_dist) > Zout)
+            Index = np.where(np.abs(z_dist) > Z_outlier)
             if Index[0].size > 0:
                 Cov_Samples = np.delete(Cov_Samples,Index,axis=0)
                 Precision_Samples = np.delete(Precision_Samples,Index,axis=0)
@@ -147,4 +124,26 @@ def Covariance(Signals,Type='MLE',Robust=[]):  # Robust = [T:Period, Z_outlier:N
         #plt.plot(z_dist)
         print(np.mean(Distance),np.std(Distance))
     return Cov_Mean
+
+# Function to plot TMSi data. Data should be a (Ch,Samples) matrix.
+## 
+def PlotTMSi(axs, Data, fs=2000, vline = []):
+    N,M = Data.shape
+    Time = np.arange(M)/fs
+
+    # Normalize for plotting. 
+    Max,Min = np.max(Data,axis=1),np.min(Data,axis=1)
+    Data = (Data-Min.reshape(N,1))/(Max-Min).reshape(N,1)
+
+    # Plotting.
+    axs.plot(Time,Data.T+np.arange(N))
+    axs.set_ylabel('Channels')
+    axs.set_yticks(np.arange(N/4+1)*4)
+    axs.set_xlabel('Time (sec)')
+
+    # Sections. 
+    if vline:
+        for xc in vline:
+            axs.axvline(x=xc, linestyle='--',color='r')
+
 
