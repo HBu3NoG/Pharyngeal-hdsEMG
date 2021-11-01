@@ -19,8 +19,6 @@ def mats2dict(dir = './data/raw/', sub_load = [7], fVerbose = True):
         if sub_id not in sub_load:
             continue
         else:
-            print(sub_id)
-
             # Initialize a subject if it does not yet exist. (Still need to add an else case, but it's not a problem yet.)
             if not sub_id in subjects.keys():
                 subjects[sub_id] = {}
