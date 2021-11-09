@@ -1,15 +1,17 @@
+import os
+import json 
 import numpy as np
-import pickle
 import pandas as pd 
 import scipy as sp 
 import scipy.io as sio
 from scipy import signal
-import os
 
 # Get matlab files from the folder storing all raw data and import them as dictionaries.
 def mats2dict(dir = './data/raw/', sub_load = [7], fVerbose = True):
     files = os.listdir(dir)   # List all files in the raw data dump.
     mat_files = [file for file in files if file[-4:] == '.mat'] # Get all files with the extension .mat
+    with open(dir+'subject_information.txt', 'r') as json_file:
+        subjects_fs = json.load(json_file)
 
     subjects = {}    # Initialize an empty dictionary.
     for filename in mat_files:  # Iterate across matlab files from our data/raw directory
@@ -29,14 +31,22 @@ def mats2dict(dir = './data/raw/', sub_load = [7], fVerbose = True):
             # Assign recording data to the dictionary structure. Stored as a numpy array because it is handled better.
             mat_file = sio.loadmat(dir+filename)
             variable_name = list(mat_file.keys())[-1]           # Some recordings have different variable names, but typically our data of interest is the last one.
-            recording = mat_file[variable_name]
+            recording = np.array(mat_file[variable_name])
+            mask = recording.any(axis=0)                        # Apply mask to recording to remove shorted segments that occur at the end of the signal.
+            recording = recording[:,mask]  
             subjects[sub_id]['Recording'] = np.array(recording)
             
-            # For now we will assume they are all 2000. BUt some are 4000.
-            subjects[sub_id]['Sampling Frequency'] = 2000
+            # For now we will assume they are all 2000. But some are 4000.
+            fs = subjects_fs[str(sub_id)]  # Quick fix: For some reason json stores objects as strings, not bytes.
+            subjects[sub_id]['Sampling Frequency'] = fs
 
             # Add subject's clicker information to the subject dictionary. In samples.
             clicker_time = pd.read_csv(dir+filename[:-4]+'_events.csv')['Seconds']
+            sub_fixed = [3,5]
+            if sub_id in sub_fixed:     # Fix subjects 3 and 5 whose experiments (rest/swallow) were appended.
+                mask = np.logical_xor(mask[1:],mask[:-1])
+                start_swallow_experiment = np.where(mask == 1)[0][1]
+                clicker_time = clicker_time + start_swallow_experiment/fs
             subjects[sub_id]['Timestamps'] = np.array(clicker_time)
         
     # Print information about the subject structure.
@@ -144,4 +154,48 @@ def PlotTMSi(axs, Data, fs=2000, vline = []):
         for xc in vline:
             axs.axvline(x=xc, linestyle='--',color='r')
 
+from scipy.ndimage import gaussian_filter1d
+def return_features(subject,nChannels=None, sigma=400):
+    # Get subject information
+    fs = subject['Sampling Frequency']
+    x = np.array(subject['Recording']);
+    clicker_information = np.array(subject['Timestamps'])  
 
+    # Pre-processing 
+    if nChannels:
+        idx = np.random.randint(len(x),size=(nChannels,))
+        x = x[idx]
+    x = Butterworth(x, ['bandpass', [70,250], 4, fs])
+    cutoffs_swallows = clicker_information.reshape(-1,2)
+    cutoffs_tasks = [(cutoffs_swallows[i][0]-3,cutoffs_swallows[i+5][1]+3) for i in np.arange(5)*6]
+
+    # Compute activity time course with weighted norm
+    z = np.linalg.norm(x.T-np.mean(x,axis=1), axis = 1)**2
+
+    # Compute envelope with a gaussian filter.
+    z_env = gaussian_filter1d(z, sigma=sigma)
+
+    # Find peaks conditioned on the first 2 minutes of rest.
+    z_noise = z[:120*fs]
+    height_extrema = z_noise.mean() + 2*z_noise.std()
+    peaks, _ = sp.signal.find_peaks(z_env, height=height_extrema)
+
+    # Extract width of peaks.
+    T_swallow = [cutoff[1]-cutoff[0] for cutoff in cutoffs_swallows]
+    wlen = np.mean(T_swallow)*fs
+    widths, width_heights, left_ips, right_ips = sp.signal.peak_widths(z_env, peaks, rel_height= 0.5, wlen=wlen)
+
+    # Return features indexed by swallow. 
+    y_tasks = np.linspace(1,6, num=30,dtype=int,endpoint=False)
+    x_features = np.zeros((6,y_tasks.shape[-1]))
+    for i,cutoff in enumerate(cutoffs_swallows):
+        a,b = [int(x*fs) for x in cutoff]
+        mask = np.logical_and(peaks>a,peaks<b)
+        n = widths[mask].argmax()
+        x_features[0,i] = len(peaks[mask])
+        x_features[1,i] = widths[mask].max()    # Only return the biggest
+        x_features[2,i], x_features[3,i] = np.vstack((left_ips,right_ips))[:,n]-peaks[n]
+        x_features[4,i] = width_heights[mask].max()
+        x_features[5,i] = (widths[mask]*width_heights[mask]).sum()
+
+    return y_tasks, x_features
